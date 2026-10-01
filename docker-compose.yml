@@ -26,12 +26,18 @@ services:
       - database
     networks:
       - frontend-network
+      - backend-network
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+        VITE_SUPABASE_URL: "https://dummy-project.supabase.co"
+        VITE_SUPABASE_ANON_KEY: "dummy-anon-key"
+        VITE_SUPABASE_SERVICE_ROLE_KEY: "dummy-service-role-key"
     container_name: orbis-frontend
     networks:
       - frontend-network
