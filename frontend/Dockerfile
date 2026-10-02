@@ -1,4 +1,5 @@
-FROM node:20
+#Stage 1: Build
+FROM node:20-alpine AS build
 
 ARG VITE_API_URL=""
 ARG VITE_SUPABASE_URL="https://dummy-project.supabase.co"
@@ -12,9 +13,13 @@ ENV VITE_SUPABASE_SERVICE_ROLE_KEY=$VITE_SUPABASE_SERVICE_ROLE_KEY
 
 WORKDIR /app
 
-COPY . .
+COPY package*.json ./
 RUN npm install
+
+COPY . .
 RUN npm run build
 
+#Stage 2: Serve
+FROM nginx:alpine
 EXPOSE 80
-CMD ["npx", "serve", "-s", "dist", "-l", "80"]
+CMD ["nginx", "-g", "daemon off;"]
