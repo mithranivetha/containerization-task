@@ -262,8 +262,6 @@ $ docker compose exec database psql -U postgres -d orbis -c "SELECT * FROM persi
 ```
 Note: `docker compose down` was used **without** `-v`, deliberately preserving the named volume (as opposed to Phase 1's use of `down -v`, which intentionally wiped the volume to test migrations against a clean database). The test record survived full container destruction and recreation, confirming the named volume — not the container filesystem — is what Postgres's data actually lives in.
 
----
-
 ## Phase 4: Network Segmentation and Isolation
 
 **Target architecture:** frontend and reverse proxy on one network; backend and database on a separate, isolated network reachable only by the backend; only the reverse proxy exposed to the host.
@@ -314,3 +312,44 @@ $ curl -v http://localhost/api/events
 ```
 
 **Why this matters:** Phase 3 protected the database from the outside world (host/internet); Phase 4 protects it from the rest of the system itself. If `proxy` or `frontend` were ever compromised, network segmentation means that compromise alone still doesn't grant a path to the database — an attacker would additionally have to compromise `backend` specifically. This mirrors a standard three-tier architecture: public tier, application tier (enforces logic/access control), data tier (never directly exposed to anything but the application tier).
+
+## Phase 5: Nginx SSL Termination and HTTPS Redirection
+
+**Approach:** Self-signed certificate rather than Let's Encrypt, since Let's Encrypt requires a real, publicly verifiable domain — `localhost` has nothing for it to verify.
+
+**Certificate generation:**
+```bash
+mkdir -p nginx/ssl
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout nginx/ssl/privkey.pem \
+  -out nginx/ssl/fullchain.pem \
+  -subj "/C=IN/ST=Karnataka/L=Mangalore/O=Orbis/CN=localhost"
+```
+
+**Configuration changes:**
+- `nginx/default.conf` split into two server blocks: one on port 80 that only issues `return 301 https://$host$request_uri;`, and one on `443 ssl` that holds `ssl_certificate`/`ssl_certificate_key`, restricts `ssl_protocols` to `TLSv1.2 TLSv1.3`, and contains the existing `/api/` and `/` proxy_pass locations unchanged — SSL is terminated entirely at Nginx; `frontend` and `backend` continue receiving plain HTTP exactly as before.
+- `docker-compose.yml`'s `proxy` service now publishes `443:443` in addition to `80:80`, and mounts `./nginx/ssl:/etc/nginx/ssl:ro`.
+
+**Verification — HTTP redirects to HTTPS:**
+```
+$ curl -v http://localhost/api/events
+< HTTP/1.1 301 Moved Permanently
+< Location: https://localhost/api/events
+```
+
+**Verification — HTTPS connection succeeds with a real TLS 1.3 handshake:**
+```
+$ curl -vk https://localhost/api/events
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384 / X25519 / RSASSA-PSS
+* Server certificate:
+*  subject: C=IN; ST=Karnataka; L=Mangalore; O=Orbis; CN=localhost
+*  start date: Oct  3 15:18:50 2026 GMT
+*  expire date: Oct  3 15:18:50 2027 GMT
+*  issuer: C=IN; ST=Karnataka; L=Mangalore; O=Orbis; CN=localhost
+*  SSL certificate verify result: self-signed certificate (18), continuing anyway.
+< HTTP/1.1 200 OK
+[]
+```
+`-k` was required only to bypass curl's *trust* check (no public CA vouches for a self-signed cert) — the encryption itself, as shown above, is a genuine negotiated TLS 1.3 session with the `TLS_AES_256_GCM_SHA384` cipher suite.
