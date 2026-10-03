@@ -261,3 +261,56 @@ $ docker compose exec database psql -U postgres -d orbis -c "SELECT * FROM persi
 (1 row)
 ```
 Note: `docker compose down` was used **without** `-v`, deliberately preserving the named volume (as opposed to Phase 1's use of `down -v`, which intentionally wiped the volume to test migrations against a clean database). The test record survived full container destruction and recreation, confirming the named volume — not the container filesystem — is what Postgres's data actually lives in.
+
+---
+
+## Phase 4: Network Segmentation and Isolation
+
+**Target architecture:** frontend and reverse proxy on one network; backend and database on a separate, isolated network reachable only by the backend; only the reverse proxy exposed to the host.
+
+**Gap found and fixed:** the `proxy` service was originally on *both* `frontend-network` and `backend-network`, giving it a direct path to the database that bypassed the backend entirely. Removed `backend-network` from `proxy`'s `networks:` list in `docker-compose.yml` — it now only needs `frontend-network`, since both `frontend` and `backend` (which bridges both networks) are reachable from there.
+
+**`docker network inspect` — `frontend-network`:** contains `orbis-proxy`, `orbis-backend`, `orbis-frontend`.
+```json
+"Containers": {
+    "...": { "Name": "orbis-proxy", "IPv4Address": "172.19.0.4/16" },
+    "...": { "Name": "orbis-backend", "IPv4Address": "172.19.0.3/16" },
+    "...": { "Name": "orbis-frontend", "IPv4Address": "172.19.0.2/16" }
+}
+```
+
+**`docker network inspect` — `backend-network`:** contains only `orbis-backend` and `orbis-db` — `proxy` is confirmed absent.
+```json
+"Containers": {
+    "...": { "Name": "orbis-backend", "IPv4Address": "172.20.0.3/16" },
+    "...": { "Name": "orbis-db", "IPv4Address": "172.20.0.2/16" }
+}
+```
+
+**Verification — backend port unreachable from host:**
+```
+$ nc -zv localhost 4000
+nc: connectx to localhost port 4000 (tcp) failed: Connection refused
+```
+
+**Verification — proxy can no longer reach the database (the actual change this phase made):**
+```
+$ docker compose exec proxy nc -zv database 5432
+nc: bad address 'database'
+```
+`proxy` can't even resolve the hostname `database` anymore, since it no longer shares a network with it.
+
+**Verification — backend can still reach the database (intended exception):**
+```
+$ docker compose exec backend nc -zv database 5432
+database (172.20.0.2:5432) open
+```
+
+**Verification — application still functions correctly after tightening the network:**
+```
+$ curl -v http://localhost/api/events
+< HTTP/1.1 200 OK
+[]
+```
+
+**Why this matters:** Phase 3 protected the database from the outside world (host/internet); Phase 4 protects it from the rest of the system itself. If `proxy` or `frontend` were ever compromised, network segmentation means that compromise alone still doesn't grant a path to the database — an attacker would additionally have to compromise `backend` specifically. This mirrors a standard three-tier architecture: public tier, application tier (enforces logic/access control), data tier (never directly exposed to anything but the application tier).
