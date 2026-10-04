@@ -353,3 +353,58 @@ $ curl -vk https://localhost/api/events
 []
 ```
 `-k` was required only to bypass curl's *trust* check (no public CA vouches for a self-signed cert) — the encryption itself, as shown above, is a genuine negotiated TLS 1.3 session with the `TLS_AES_256_GCM_SHA384` cipher suite.
+
+## Phase 6: Consolidated Orchestration and Build Cache Analysis
+
+### Part A: Extracting Configuration into Environment Files
+
+All previously hardcoded values in `docker-compose.yml` (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `AUTH0_ISSUER_BASE_URL`, `AUTH0_AUDIENCE`, and all four `VITE_*` frontend build args) were extracted into `${VARIABLE}` references, resolved via a `.env` file.
+
+Following standard practice, `.env` itself is excluded via `.gitignore` and was never committed — only `.env.example` (containing the same dummy/placeholder values, since none of them are real secrets in this project) is committed, documenting exactly what the project expects. Reproduction requires one additional step: `cp .env.example .env` before `docker compose up --build`.
+
+### Part B: Build Cache Analysis
+
+**Source change:** modified the startup log line in `backend/server.js` (a trivial, purely cosmetic change, to isolate the caching behavior from any functional risk).
+
+**First rebuild (before fixing Dockerfile ordering) — `npm ci` reruns unnecessarily:**
+```
+#9 [4/6] COPY . .
+#9 DONE 0.1s
+
+#10 [5/6] RUN npm ci
+#10 21.93  added 191 packages, and audited 192 packages in 22s
+#10 DONE 22.1s
+
+#11 [6/6] RUN npx prisma generate
+#11 DONE 2.0s
+```
+At this point, `backend/Dockerfile` still copied all source code (`COPY . .`) before running `npm ci` — the original ordering, never updated to match the Phase 2 pattern already applied to the frontend. Because `server.js` changed, `COPY . .`'s cache was invalidated, and since Docker invalidates every subsequent layer once one layer's cache breaks, `npm ci` was forced to rerun from scratch — a real, measured 22.1 seconds, despite `package.json` never actually changing.
+
+**Fix applied:** reordered `backend/Dockerfile` to copy `package*.json` and run `npm ci` *before* copying the rest of the source — exactly the pattern already used in the frontend Dockerfile since Phase 2:
+```dockerfile
+FROM node:20-alpine
+RUN apk add --no-cache openssl
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npx prisma generate
+CMD ["sh", "-c", "npx prisma migrate deploy && npm start"]
+```
+
+**Second rebuild (after fix, with another source change) — `npm ci` now stays cached:**
+```
+#9 [4/7] COPY package*.json ./
+#9 CACHED
+
+#10 [5/7] RUN npm ci
+#10 CACHED
+
+#11 [6/7] COPY . .
+#11 DONE 0.0s
+
+#12 [7/7] RUN npx prisma generate
+#12 DONE 2.3s
+```
+
+**Analysis:** `RUN npm ci` dropped from a real **22.1 seconds, rerun** to **CACHED (effectively 0s)** — the exact same source code change, the exact same dependencies, the only difference being instruction order in the Dockerfile. This directly demonstrates Docker's layer caching rule: build steps are cached in strict sequence, and once any single layer's inputs change, every layer after it is invalidated too — regardless of whether that later step actually depends on what changed. By copying dependency manifests (`package*.json`) and installing dependencies *before* copying the rest of the source code, a pure source-code edit only invalidates `COPY . .` and whatever comes after it, while the genuinely expensive dependency-install step remains cached and is skipped entirely. This is the same optimization already applied to the frontend Dockerfile in Phase 2, now confirmed with real before/after timing on the backend as well.
