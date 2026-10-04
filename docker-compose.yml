@@ -3,9 +3,9 @@ services:
     image: postgres:15-alpine
     container_name: orbis-db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
-      POSTGRES_DB: orbis
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -19,9 +19,9 @@ services:
     container_name: orbis-backend
     environment:
       PORT: 4000
-      DATABASE_URL: postgresql://postgres:postgrespassword@database:5432/orbis?schema=public
-      AUTH0_ISSUER_BASE_URL: https://dev-dummy.auth0.com/
-      AUTH0_AUDIENCE: https://api.orbis.com
+      DATABASE_URL: ${DATABASE_URL}
+      AUTH0_ISSUER_BASE_URL: ${AUTH0_ISSUER_BASE_URL}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
     depends_on:
       - database
     networks:
@@ -34,10 +34,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: ""
-        VITE_SUPABASE_URL: "https://dummy-project.supabase.co"
-        VITE_SUPABASE_ANON_KEY: "dummy-anon-key"
-        VITE_SUPABASE_SERVICE_ROLE_KEY: "dummy-service-role-key"
+        VITE_API_URL: ${VITE_API_URL}
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_SUPABASE_SERVICE_ROLE_KEY: ${VITE_SUPABASE_SERVICE_ROLE_KEY}
     container_name: orbis-frontend
     networks:
       - frontend-network
